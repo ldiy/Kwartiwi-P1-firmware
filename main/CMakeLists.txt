@@ -1,2 +1,2 @@
-idf_component_register(SRCS "main.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(SRCS "main.c" "emucs_p1.c"
+                    INCLUDE_DIRS "." "include")
