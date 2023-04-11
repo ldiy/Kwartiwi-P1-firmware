@@ -10,6 +10,6 @@
 
 void app_main(void)
 {
-    esp_log_level_set("emucs_p1", ESP_LOG_INFO);
+    esp_log_level_set("emucs_p1", ESP_LOG_DEBUG);
     xTaskCreate(emucs_p1_task, "emucs_p1_task", 4096, NULL, 5, NULL);
 }
