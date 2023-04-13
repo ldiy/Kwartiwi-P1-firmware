@@ -3,3 +3,4 @@ build/
 .idea/
 sdkconfig
 sdkconfig.old
+managed_components

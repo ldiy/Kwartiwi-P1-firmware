@@ -5,6 +5,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "esp_system.h"
+#include "esp_event.h"
 #include "emucs_p1.h"
 #include "networking.h"
 
@@ -22,6 +24,9 @@ void app_main(void) {
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    // Initialize the event loop
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // Initialize networking
     esp_log_level_set("networking", ESP_LOG_DEBUG);
