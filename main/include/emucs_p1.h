@@ -59,6 +59,8 @@ typedef struct {
 
 // Function prototypes
 _Noreturn void emucs_p1_task(void *pvParameters);
+emucs_p1_data_t * emucs_p1_get_telegram(void);
+SemaphoreHandle_t emucs_p1_get_telegram_mutex_handle(void);
 
 
 #endif // EMUCS_P1_H

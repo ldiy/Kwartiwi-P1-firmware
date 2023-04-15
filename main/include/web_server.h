@@ -1,0 +1,17 @@
+#ifndef WEB_SERVER_H
+#define WEB_SERVER_H
+
+#define WEB_SERVER_PORT 80
+#define WEB_SERVER_FS_MOUNT_POINT "/www"
+#define WEB_SERVER_SPIFFS_PARTITION_LABEL "www"
+#define WEB_SERVER_SPIFFS_MAX_OPEN_FILES 5
+#define WEB_SERVER_MAX_FILE_PATH_LEN 128
+#define WEB_SERVER_FILE_BUFFER_SIZE 1024
+#define WEB_SERVER_API_ROUTES_PREFIX "/api"
+#define WEB_SERVER_MAX_TIMEOUT_MS 1000
+#define WEB_SERVER_API_VERSION "v1"
+
+// Function prototypes
+void setup_web_server(void);
+
+#endif //WEB_SERVER_H

@@ -1,3 +1,11 @@
+/**
+ * @file emucs_p1.c
+ * @brief eMUCS P1 reader
+ * @details This file contains functions for reading the P1 port of a DSMR 5.0 compatible smart meter.
+ * Data is read from the P1 port using UART and is parsed into a struct.
+ * @todo Add support for M-Bus data in the telegram
+ */
+
 #include <sys/cdefs.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,17 +16,19 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "emucs_p1.h"
-#include "app_error.h"
 
 #define P1_DATA_PIN 5
 #define UART_RING_BUFFER_SIZE 1024
 #define UART_NUM UART_NUM_1
 #define UART_QUEUE_SIZE 10
 #define TELEGRAM_BUFFER_SIZE 1500
+#define UART_BAUD_RATE 115200
 
 
-static const char *TAG = "emucs_p1";
-static uint8_t uart_buffer[TELEGRAM_BUFFER_SIZE];
+static const char *TAG = "emucs_p1";                // Tag for logging
+static uint8_t uart_buffer[TELEGRAM_BUFFER_SIZE];   // Buffer for storing uart data to find the telegram in
+emucs_p1_data_t p1_telegram;                        // Struct for storing the parsed telegram
+SemaphoreHandle_t p1_telegram_mutex;                // Mutex for accessing the telegram struct
 
 // Function prototypes
 static void process_p1_data(size_t size);
@@ -26,14 +36,14 @@ static void parse_telegram(uint8_t * telegram, size_t size);
 static bool check_telegram_crc(uint8_t * telegram, size_t size);
 static uint16_t crc16(uint8_t * data, size_t size);
 static inline bool starts_with(const char * line, const char * needle);
-static app_error_t get_string_between_chars(const char * src, char start, char end, char * result, size_t max_size);
+static esp_err_t get_string_between_chars(const char * src, char start, char end, char * result, size_t max_size);
 static time_t get_timestamp_between_chars(const char * src, char start, char end);
 static float get_float_between_chars(const char * src, char start, char end);
-static uint32_t get_uint32_between_chars(const char * src, const char start, const char end);
+static uint32_t get_uint32_between_chars(const char * src, char start, char end);
 
 
 /**
- * Task that reads data from the P1 port and processes it
+ * @brief Task that reads data from the P1 port and processes it
  *
  * @param pvParameters
  */
@@ -43,7 +53,7 @@ _Noreturn void emucs_p1_task(void *pvParameters) {
 
     // UART configuration (8N1)
     uart_config_t uart_config = {
-            .baud_rate = 115200,
+            .baud_rate = UART_BAUD_RATE,
             .data_bits = UART_DATA_8_BITS,
             .parity = UART_PARITY_DISABLE,
             .stop_bits = UART_STOP_BITS_1,
@@ -62,6 +72,14 @@ _Noreturn void emucs_p1_task(void *pvParameters) {
 
     // Install UART driver using an event queue
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_RING_BUFFER_SIZE, 0, UART_QUEUE_SIZE, &uart_queue, 0));
+
+    // Create a mutex for the telegram data
+    p1_telegram_mutex = xSemaphoreCreateMutex();
+
+    if (p1_telegram_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create telegram mutex");
+        assert(false);
+    }
 
     for(;;) {
         if(xQueueReceive(uart_queue, (void *)&event, (TickType_t)portMAX_DELAY)) {
@@ -89,9 +107,28 @@ _Noreturn void emucs_p1_task(void *pvParameters) {
 }
 
 /**
- * Read size bytes from the UART and process them.
+ * @brief Get the telegram data
+ * @note Be sure to lock the mutex before reading the data
  *
- * @param size The number of bytes to read from the UART
+ * @return A pointer to the telegram data
+ */
+emucs_p1_data_t * emucs_p1_get_telegram(void) {
+        return &p1_telegram;
+}
+
+/**
+ * @brief Get the handle to the mutex that protects the telegram data
+ *
+ * @return The handle to the mutex
+ */
+SemaphoreHandle_t emucs_p1_get_telegram_mutex_handle(void) {
+    return p1_telegram_mutex;
+}
+
+/**
+ * @brief Read size bytes from the UART and process them.
+ *
+ * @param[in] size The number of bytes to read from the UART
  */
 static void process_p1_data(size_t size) {
     static enum {
@@ -102,7 +139,6 @@ static void process_p1_data(size_t size) {
 
     static uint8_t * uart_buffer_index = uart_buffer;
     static uint8_t * telegram_start = NULL;
-    static uint8_t * telegram_end = NULL; // TODO: remove unused variable
     static size_t telegram_size = 0;
 
     // Check if there is enough space in the buffer
@@ -113,7 +149,6 @@ static void process_p1_data(size_t size) {
         state = P1_STATE_IDLE;
         uart_buffer_index = uart_buffer;
         telegram_start = NULL;
-        telegram_end = NULL;
         telegram_size = 0;
         return;
     }
@@ -145,7 +180,6 @@ static void process_p1_data(size_t size) {
                 if (*data == '!') {
                     ESP_LOGD(TAG, "Telegram end found");
                     state = P1_STATE_END;
-                    telegram_end = data;
                 }
                 break;
             case P1_STATE_END:
@@ -164,7 +198,6 @@ static void process_p1_data(size_t size) {
 
                     // Reset the telegram start, end and size
                     telegram_start = NULL;
-                    telegram_end = NULL;
                     telegram_size = 0;
                 }
                 break;
@@ -190,11 +223,13 @@ static void process_p1_data(size_t size) {
 }
 
 /**
- * Parse the telegram.
+ * @brief Parse the telegram.
  *
  * @note The content of the last two bytes doesn't matter (normally '\\r' and '\\n')
- * @param telegram The c string containing the telegram
- * @param size The size of the telegram
+ * @todo Parse M-Bus data
+ *
+ * @param[in] telegram The c string containing the telegram
+ * @param[in] size The size of the telegram
  */
 static void parse_telegram(uint8_t * telegram, size_t size) {
     // Check if the telegram CRC16 is correct
@@ -203,9 +238,12 @@ static void parse_telegram(uint8_t * telegram, size_t size) {
         return;
     }
 
+    // Get the telegram semaphore
+    xSemaphoreTake(p1_telegram_mutex, portMAX_DELAY);
+
     // Parse the telegram
     ESP_LOGD(TAG, "Parsing telegram...");
-    emucs_p1_data_t p1_telegram;
+    //emucs_p1_data_t p1_telegram;
     memset(&p1_telegram, 0, sizeof(emucs_p1_data_t));
     // Read the telegram line by line
     char * line = strtok((char *) telegram, "\r\n");
@@ -373,13 +411,16 @@ static void parse_telegram(uint8_t * telegram, size_t size) {
 
         line = strtok(NULL, "\r\n");
     }
+
+    // Release the semaphore
+    xSemaphoreGive(p1_telegram_mutex);
 }
 
 /**
  * Check if a string starts with a specific string
  *
- * @param line The string to check
- * @param needle The string to check for
+ * @param[in] line The string to check
+ * @param[in] needle The string to check for
  * @return True if the string starts with the needle, false otherwise
  */
 static inline bool starts_with(const char * line, const char * needle) {
@@ -387,28 +428,29 @@ static inline bool starts_with(const char * line, const char * needle) {
 }
 
 /**
- * Get a string between two characters
+ * @brief Get a string between two characters
  *
- * @param src The source string
- * @param start The start character (the character before the string)
- * @param end The end character (the character after the string)
- * @param result The resulting string
- * @param max_size The maximum size of the resulting string
- * @return APP_ERROR_OK if successful, APP_ERROR_FAIL otherwise
+ * @param[in] src The source string
+ * @param[in] start The start character (the character before the string)
+ * @param[in] end The end character (the character after the string)
+ * @param[out] result The resulting string
+ * @param[in] max_size The maximum size of the resulting string
+ * @return  - ESP_OK if successful
+ *          - APP_ERROR_FAIL otherwise
  */
-static app_error_t get_string_between_chars(const char * src, const char start, const char end, char * result, size_t max_size) {
+static esp_err_t get_string_between_chars(const char * src, const char start, const char end, char * result, size_t max_size) {
     // Find the start character
     const char * start_pos = strchr(src, start);
     if (start_pos == NULL) {
         ESP_LOGW(TAG, "Start character '%c' not found", start);
-        return APP_ERROR_FAIL;
+        return ESP_FAIL;
     }
 
     // Find the end character
     const char * end_pos = strchr(start_pos, end);
     if (end_pos == NULL) {
         ESP_LOGW(TAG, "End character '%c' not found", end);
-        return APP_ERROR_FAIL;
+        return ESP_FAIL;
     }
 
     // Copy the string between the start and end character to the result and add a null terminator
@@ -420,23 +462,24 @@ static app_error_t get_string_between_chars(const char * src, const char start, 
     strncpy(result, start_pos + 1, length);
     result[length] = '\0';
 
-    return APP_ERROR_OK;
+    return ESP_OK;
 }
 
 /**
- * Get the timestamp string between the start and end character and parse it to a time_t
+ * @brief Get the timestamp string between the start and end character and parse it to a time_t
  *
  * @note The timestamp string format is YYMMDDhhmmss
- * @param src The source string where the timestamp string is located in
- * @param start The start character (character before the timestamp string)
- * @param end The end character (character after the timestamp string)
+ *
+ * @param[in] src The source string where the timestamp string is located in
+ * @param[in] start The start character (character before the timestamp string)
+ * @param[in] end The end character (character after the timestamp string)
  * @return The timestamp as a time_t, 0 if failed
  */
 static time_t get_timestamp_between_chars(const char * src, const char start, const char end) {
     char timestamp_str[14];
 
     // Get the timestamp string between the start and end character
-    if (get_string_between_chars(src, start, end, timestamp_str, sizeof(timestamp_str)) != APP_ERROR_OK) {
+    if (get_string_between_chars(src, start, end, timestamp_str, sizeof(timestamp_str)) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get timestamp string between '%c' and '%c'", start, end);
         return 0;
     }
@@ -455,11 +498,12 @@ static time_t get_timestamp_between_chars(const char * src, const char start, co
 }
 
 /**
- * Get the float string between the start and end character and parse it to a float
- * @param src The source string where the float string is located in
- * @param start The start character (character before the float string)
- * @param end The end character (character after the float string)
- * @return
+ * @brief Get the float string between the start and end character and parse it to a float
+ *
+ * @param[in] src The source string where the float string is located in
+ * @param[in] start The start character (character before the float string)
+ * @param[in] end The end character (character after the float string)
+ * @return The float. If the conversion was unsuccessful, 0 is returned
  */
 static float get_float_between_chars(const char * src, const char start, const char end) {
     char float_str[20];
@@ -467,7 +511,7 @@ static float get_float_between_chars(const char * src, const char start, const c
     char * end_ptr = NULL;
 
     // Get the float string between the start and end character
-    if (get_string_between_chars(src, start, end, float_str, sizeof(float_str)) != APP_ERROR_OK) {
+    if (get_string_between_chars(src, start, end, float_str, sizeof(float_str)) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get float string between '%c' and '%c'", start, end);
         return 0;
     }
@@ -483,12 +527,12 @@ static float get_float_between_chars(const char * src, const char start, const c
 }
 
 /**
- * Get the uint32 string between the start and end character and parse it to an uint16
+ * @brief Get the uint32 string between the start and end character and parse it to an uint16
  *
- * @param src The source string where the uint16 string is located in
- * @param start The start character (character before the uint32 string)
- * @param end The end character (character after the uint32 string)
- * @return The result as an uint32
+ * @param[in] src The source string where the uint16 string is located in
+ * @param[in] start The start character (character before the uint32 string)
+ * @param[in] end The end character (character after the uint32 string)
+ * @return The result as an uint32. If the conversion was unsuccessful, 0 is returned
  */
 static uint32_t get_uint32_between_chars(const char * src, const char start, const char end) {
     char uint16_str[11];
@@ -496,7 +540,7 @@ static uint32_t get_uint32_between_chars(const char * src, const char start, con
     char * end_ptr = NULL;
 
     // Get the uint16 string between the start and end character
-    if (get_string_between_chars(src, start, end, uint16_str, sizeof(uint16_str)) != APP_ERROR_OK) {
+    if (get_string_between_chars(src, start, end, uint16_str, sizeof(uint16_str)) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get uint32 string between '%c' and '%c'", start, end);
         return 0;
     }
@@ -512,10 +556,10 @@ static uint32_t get_uint32_between_chars(const char * src, const char start, con
 }
 
 /**
- * Check if the telegram CRC16 is correct.
+ * @brief Check if the telegram CRC16 is correct.
  *
- * @param telegram The telegram to check
- * @param size The size of the telegram
+ * @param[in] telegram The telegram to check
+ * @param[in] size The size of the telegram
  * @return True if the telegram CRC16 is correct, false otherwise
  */
 static bool check_telegram_crc(uint8_t * telegram, size_t size) {
@@ -531,7 +575,7 @@ static bool check_telegram_crc(uint8_t * telegram, size_t size) {
 }
 
 /**
- * Calculate the CRC16 of the data.
+ * @brief Calculate the CRC16 of the data.
  *
  * @details
  * The CRC16 is calculated with the following parameters:
@@ -539,8 +583,8 @@ static bool check_telegram_crc(uint8_t * telegram, size_t size) {
  *   - initial value: 0
  *   - final XOR value: 0
  *   - MSB first
- * @param data The data to calculate the CRC16 for
- * @param size The length of the data
+ * @param data[in] The data to calculate the CRC16 for
+ * @param size[in] The length of the data
  * @return The CRC16 of the data
  */
 static uint16_t crc16(uint8_t * data, size_t size) {

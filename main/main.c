@@ -9,7 +9,7 @@
 #include "esp_event.h"
 #include "emucs_p1.h"
 #include "networking.h"
-
+#include "web_server.h"
 
 void app_main(void) {
     esp_log_level_set("emucs_p1", ESP_LOG_DEBUG);
@@ -30,5 +30,9 @@ void app_main(void) {
 
     // Initialize networking
     esp_log_level_set("networking", ESP_LOG_DEBUG);
-    xTaskCreate(setup_networking_task, "setup_networking_task", 4096, NULL, 5, NULL);
+    setup_networking();
+
+    // Initialize web server
+    esp_log_level_set("web_server", ESP_LOG_DEBUG);
+    setup_web_server();
 }

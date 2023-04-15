@@ -50,10 +50,8 @@ static void init_mdns(void);
  *
  * @note The default event loop should be initialized before calling this function.
  * @note This function will modify the global networking_config struct.
- *
- * @param[in] pvParameters Unused
  */
-void setup_networking_task(void *pvParameters) {
+void setup_networking(void) {
     esp_err_t err;
     wifi_config_t *wifi_config = &networking_config.wifi_config;
 
@@ -87,9 +85,6 @@ void setup_networking_task(void *pvParameters) {
 
     // Initialize mDNS
     init_mdns();
-
-    // Delete this task
-    vTaskDelete(NULL);
 }
 
 /**

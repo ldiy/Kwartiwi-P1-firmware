@@ -31,6 +31,6 @@ enum networking_wifi_mode_e {
 };
 
 // Function prototypes
-void setup_networking_task(void *pvParameters);
+void setup_networking(void);
 
 #endif //NETWORKING_H
