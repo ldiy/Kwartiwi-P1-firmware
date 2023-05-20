@@ -9,6 +9,7 @@
 #include "esp_event.h"
 #include "emucs_p1.h"
 #include "networking.h"
+#include "logger.h"
 #include "web_server.h"
 
 void app_main(void) {
@@ -35,4 +36,10 @@ void app_main(void) {
     // Initialize web server
     esp_log_level_set("web_server", ESP_LOG_DEBUG);
     setup_web_server();
+
+    // Run the logger task
+    esp_log_level_set("logger", ESP_LOG_DEBUG);
+    xTaskCreate(logger_task, "logger_task", 4096, NULL, 6, NULL);
+
+
 }
