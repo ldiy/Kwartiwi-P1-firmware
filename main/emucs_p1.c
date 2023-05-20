@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "emucs_p1.h"
 
@@ -29,6 +30,7 @@ static const char *TAG = "emucs_p1";                // Tag for logging
 static uint8_t uart_buffer[TELEGRAM_BUFFER_SIZE];   // Buffer for storing uart data to find the telegram in
 emucs_p1_data_t p1_telegram;                        // Struct for storing the parsed telegram
 SemaphoreHandle_t p1_telegram_mutex;                // Mutex for accessing the telegram struct
+EventGroupHandle_t p1_event_group;                  // Event group for signaling when a new telegram is available
 
 // Function prototypes
 static void process_p1_data(size_t size);
@@ -75,6 +77,9 @@ _Noreturn void emucs_p1_task(void *pvParameters) {
 
     // Create a mutex for the telegram data
     p1_telegram_mutex = xSemaphoreCreateMutex();
+
+    // Create an event group for signaling when a new telegram is available
+    p1_event_group = xEventGroupCreate();
 
     if (p1_telegram_mutex == NULL) {
         ESP_LOGE(TAG, "Failed to create telegram mutex");
@@ -126,7 +131,18 @@ SemaphoreHandle_t emucs_p1_get_telegram_mutex_handle(void) {
 }
 
 /**
+ * @brief Get the handle to the event group that signals when a new telegram is available
+ *
+ * @return The handle to the event group
+ */
+EventGroupHandle_t emucs_p1_get_event_group_handle(void) {
+    return p1_event_group;
+}
+
+/**
  * @brief Read size bytes from the UART and process them.
+ *
+ * @warning This function is not thread safe. It should only be called from the emucs_p1_task
  *
  * @param[in] size The number of bytes to read from the UART
  */
@@ -227,6 +243,7 @@ static void process_p1_data(size_t size) {
  *
  * @note The content of the last two bytes doesn't matter (normally '\\r' and '\\n')
  * @todo Parse M-Bus data
+ * @todo use strtok_r instead of strtok to make this function thread safe
  *
  * @param[in] telegram The c string containing the telegram
  * @param[in] size The size of the telegram
@@ -414,6 +431,9 @@ static void parse_telegram(uint8_t * telegram, size_t size) {
 
     // Release the semaphore
     xSemaphoreGive(p1_telegram_mutex);
+
+    // Set the telegram available bit in the event group
+    xEventGroupSetBits(p1_event_group, EMUCS_P1_EVENT_TELEGRAM_AVAILABLE_BIT);
 }
 
 /**
@@ -583,8 +603,8 @@ static bool check_telegram_crc(uint8_t * telegram, size_t size) {
  *   - initial value: 0
  *   - final XOR value: 0
  *   - MSB first
- * @param data[in] The data to calculate the CRC16 for
- * @param size[in] The length of the data
+ * @param[in] data The data to calculate the CRC16 for
+ * @param[in] size The length of the data
  * @return The CRC16 of the data
  */
 static uint16_t crc16(uint8_t * data, size_t size) {

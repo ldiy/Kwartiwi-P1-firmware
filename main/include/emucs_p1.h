@@ -3,13 +3,13 @@
 
 #include <stdint.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
 #include "driver/uart.h"
 
-
-#define EMUCS_P1_ERROR_OK 0
-#define EMUCS_P1_ERROR_FAILED (-1)
-
-typedef int8_t emucs_p1_error_t;
+#define EMUCS_P1_TELEGRAM_INTERVAL_MS 1000  // Interval between P1 telegrams in ms
+#define EMUCS_P1_EVENT_TELEGRAM_AVAILABLE_BIT BIT0
 
 typedef enum emucs_p1_breaker_state_e {
     EMUCS_P1_BREAKER_STATE_DISCONNECTED = 0,
@@ -61,6 +61,7 @@ typedef struct {
 _Noreturn void emucs_p1_task(void *pvParameters);
 emucs_p1_data_t * emucs_p1_get_telegram(void);
 SemaphoreHandle_t emucs_p1_get_telegram_mutex_handle(void);
+EventGroupHandle_t emucs_p1_get_event_group_handle(void);
 
 
 #endif // EMUCS_P1_H
