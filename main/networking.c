@@ -3,6 +3,8 @@
  * @brief Networking functions
  * @todo  - Add support for static IP configuration in STA mode
  *        - Add support for custom DHCP settings in AP mode
+ *        - Scanning for available Wi-Fi networks
+ *        - Separate wifi init and connecting
  */
 
 #include <stdio.h>
@@ -71,6 +73,7 @@ void setup_networking(void) {
         err = wifi_init_sta(wifi_config);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to initialize Wi-Fi in Station mode, falling back to AP mode");
+            // TODO: Read AP configuration from NVS, as wifi_config can't contain both AP and STA configuration (union)
             err = wifi_init_softap(wifi_config);
             ESP_ERROR_CHECK(err);
         }
@@ -108,18 +111,21 @@ static void read_config_from_nvs(void) {
     networking_config.wifi_mode = (enum networking_wifi_mode_e) wifi_mode_u8;
     ESP_LOGD(TAG, "Wi-Fi mode: %d", networking_config.wifi_mode);
 
-    // Read the configuration for AP mode
-    max_len = sizeof(wifi_config->ap.ssid);
-    ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_AP_SSID, (char *) wifi_config->ap.ssid, &max_len));
-    max_len = sizeof(wifi_config->ap.password);
-    ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_AP_PASS, (char *) wifi_config->ap.password, &max_len));
-    ESP_ERROR_CHECK(nvs_get_u8(nvs_handle, NETWORKING_NVS_KEY_AP_CHANNEL, &wifi_config->ap.channel));
-
-    // Read the configuration for STA mode
-    max_len = sizeof(wifi_config->sta.ssid);
-    ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_STA_SSID, (char *) wifi_config->sta.ssid, &max_len));
-    max_len = sizeof(wifi_config->sta.password);
-    ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_STA_PASS, (char *) wifi_config->sta.password, &max_len));
+    if (networking_config.wifi_mode == NETWORKING_WIFI_MODE_AP) {
+        // Read the configuration for AP mode
+        max_len = sizeof(wifi_config->ap.ssid);
+        ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_AP_SSID, (char *) wifi_config->ap.ssid, &max_len));
+        max_len = sizeof(wifi_config->ap.password);
+        ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_AP_PASS, (char *) wifi_config->ap.password, &max_len));
+        ESP_ERROR_CHECK(nvs_get_u8(nvs_handle, NETWORKING_NVS_KEY_AP_CHANNEL, &wifi_config->ap.channel));
+    }
+    else if (networking_config.wifi_mode == NETWORKING_WIFI_MODE_STATION) {
+        // Read the configuration for STA mode
+        max_len = sizeof(wifi_config->sta.ssid);
+        ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_STA_SSID, (char *) wifi_config->sta.ssid, &max_len));
+        max_len = sizeof(wifi_config->sta.password);
+        ESP_ERROR_CHECK(nvs_get_str(nvs_handle, NETWORKING_NVS_KEY_STA_PASS, (char *) wifi_config->sta.password, &max_len));
+    }
 
     // Read the hostname
     max_len = sizeof(networking_config.hostname);
