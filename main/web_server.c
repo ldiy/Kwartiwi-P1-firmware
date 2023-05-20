@@ -12,13 +12,17 @@
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
 #include "esp_vfs_semihost.h"
+#include "mdns.h"
 #include "cJSON.h"
-#include "web_server.h"
 #include "emucs_p1.h"
+#include "predict_peak.h"
+#include "logger.h"
+#include "web_server.h"
 
 #define USE_SEMIHOST_FS 0
+#define MDNS_SERVICE_NAME "_kwartiwi-p1"
 
-static const char *TAG = "networking";  // Tag used for logging
+static const char *TAG = "web_server";  // Tag used for logging
 
 // Function prototypes
 static esp_err_t init_fs(void);
@@ -34,8 +38,11 @@ static esp_err_t system_info_get_handler(httpd_req_t *req);
 static esp_err_t p1_data_basic_get_handler(httpd_req_t *req);
 static esp_err_t p1_data_complete_get_handler(httpd_req_t *req);
 static esp_err_t api_version_get_handler(httpd_req_t *req);
+static esp_err_t predicted_peak_data_get_handler(httpd_req_t *req);
 static esp_err_t send_p1_data(httpd_req_t *req, bool complete);
 static esp_err_t get_p1_data_in_json(cJSON *json_obj, bool complete);
+static esp_err_t meter_data_get_handler(httpd_req_t *req);
+static esp_err_t meter_data_history_get_handler(httpd_req_t *req);
 
 /**
  * @brief Configure and start the web server
@@ -49,6 +56,10 @@ void setup_web_server(void) {
 
     // Start the web server
     ESP_ERROR_CHECK(start_web_server());
+
+    // Advertise the web server on the network using mDNS TODO: check if mdns is initialized
+    ESP_LOGI(TAG, "Advertising web server using mDNS");
+    ESP_ERROR_CHECK(mdns_service_add(NULL, MDNS_SERVICE_NAME, "_tcp", 80, NULL, 0));
 }
 
 /**
@@ -226,27 +237,27 @@ static esp_err_t setup_api_routes(httpd_handle_t server) {
         return ESP_FAIL;
     }
 
-    // P1 data basic
-    httpd_uri_t p1_data_basic_get_uri = {
-            .uri =  WEB_SERVER_API_ROUTES_PREFIX "/p1/data/basic",
+    // Meter data
+    httpd_uri_t meter_data_get_uri = {
+            .uri =  WEB_SERVER_API_ROUTES_PREFIX "/meter-data",
             .method = HTTP_GET,
-            .handler = p1_data_basic_get_handler,
+            .handler = meter_data_get_handler,
             .user_ctx = NULL
     };
-    if (httpd_register_uri_handler(server, &p1_data_basic_get_uri) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register URI handler for P1 data basic");
+    if (httpd_register_uri_handler(server, &meter_data_get_uri) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register URI handler for the meter data");
         return ESP_FAIL;
     }
 
-    // P1 data complete
-    httpd_uri_t p1_data_complete_get_uri = {
-            .uri =  WEB_SERVER_API_ROUTES_PREFIX "/p1/data/complete",
+    // Meter data
+    httpd_uri_t meter_data_history_get_uri = {
+            .uri =  WEB_SERVER_API_ROUTES_PREFIX "/meter-data-history",
             .method = HTTP_GET,
-            .handler = p1_data_complete_get_handler,
+            .handler = meter_data_history_get_handler,
             .user_ctx = NULL
     };
-    if (httpd_register_uri_handler(server, &p1_data_complete_get_uri) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register URI handler for P1 data complete");
+    if (httpd_register_uri_handler(server, &meter_data_history_get_uri) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register URI handler for the meter data history");
         return ESP_FAIL;
     }
 
@@ -453,80 +464,21 @@ static esp_err_t api_version_get_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief Handler for getting the basic P1 data
+ * @brief Handler for the meter-data
  *
  * @param[in] req The request handle
  * @return ESP_OK on success
  */
-static esp_err_t p1_data_basic_get_handler(httpd_req_t *req) {
-    return send_p1_data(req, false);
-}
-
-/**
- * @brief Handler for getting the complete P1 data
- *
- * @param[in] req The request handle
- * @return ESP_OK on success
- */
-static esp_err_t p1_data_complete_get_handler(httpd_req_t *req) {
-    return send_p1_data(req, true);
-}
-
-/**
- * @brief Send the P1 data to the client.
- *
- * The P1 data is sent in JSON format.
- * The data can be either the basic data or the complete data, depending on the value of the 'complete' parameter.
- * If the p1 data could not be retrieved / converted to JSON, a 500 error is sent.
- *
- * @param[in] req The request handle
- * @param[in] complete True to send the complete data, false to send the basic data
- * @return ESP_OK on success
- */
-static esp_err_t send_p1_data(httpd_req_t *req, const bool complete) {
+static esp_err_t meter_data_get_handler(httpd_req_t *req) {
+    struct predicted_peak_s predicted_peak;
     esp_err_t err;
-    cJSON *json_data = cJSON_CreateObject();
-
-    // Get the P1 data in JSON format
-    if (get_p1_data_in_json(json_data, complete) != ESP_OK) {
-        return http_500_handler(req, "Failed to get P1 data");
-    }
-    // Send the JSON data
-    err = send_json_response(req, json_data, 200);
-
-    // Free resources
-    cJSON_Delete(json_data);
-
-    return err;
-}
-
-/**
- * @brief Get the P1 data in JSON format
- *
- * Get the P1 data in JSON format. The data is retrieved from the P1 data structure.
- * Based on the complete parameter, the data is either the complete data or only the basic data.
- * Basic data includes the following JSON fields:
- *   - timestamp
- *   - electricityDeliveredTariff1
- *   - electricityDeliveredTariff2
- *   - electricityReturnedTariff1
- *   - electricityReturnedTariff2
- *   - currentAvgDemand
- *   - currentPowerUsage
- *   - currentPowerReturn
- * For the complete data, all the fields of emucs_p1_data_t are included.
- *
- * @note The json_obj must be freed by the caller
- *
- * @param[out] json_obj A pointer to the JSON object. It must be already initialized with cJSON_CreateObject()
- * @param[in] complete If true, the complete data is returned. If false, only the basic data is returned.
- * @return ESP_OK on success
- */
-static esp_err_t get_p1_data_in_json(cJSON *json_obj, const bool complete) {
+    cJSON *json_obj;
+    SemaphoreHandle_t predicted_peak_mutex = predict_peak_get_predicted_peak_mutex_handle();
     emucs_p1_data_t *p1_data;
     cJSON *tmp_obj;
-    cJSON *tmp_array;
     SemaphoreHandle_t mutex = emucs_p1_get_telegram_mutex_handle();
+
+    json_obj = cJSON_CreateObject();
 
     // Get the semaphore
     if (xSemaphoreTake(mutex, WEB_SERVER_MAX_TIMEOUT_MS / portTICK_PERIOD_MS) != pdTRUE) {
@@ -546,56 +498,126 @@ static esp_err_t get_p1_data_in_json(cJSON *json_obj, const bool complete) {
     cJSON_AddNumberToObject(json_obj, "currentAvgDemand", p1_data->current_avg_demand);
     cJSON_AddNumberToObject(json_obj, "currentPowerUsage", p1_data->current_power_usage);
     cJSON_AddNumberToObject(json_obj, "currentPowerReturn", p1_data->current_power_return);
+    tmp_obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) p1_data->max_demand_month.timestamp);
+    cJSON_AddNumberToObject(tmp_obj, "demand", p1_data->max_demand_month.max_demand);
+    cJSON_AddItemToObject(json_obj, "maxDemandMonth", tmp_obj);
 
-    // Add the rest of the data if requested
-    if (complete) {
-        cJSON_AddStringToObject(json_obj, "versionInfo", p1_data->version_info);
-        cJSON_AddStringToObject(json_obj, "equipmentId", p1_data->equipment_id);
-        cJSON_AddNumberToObject(json_obj, "electricityTariff", p1_data->tariff_indicator);
-        tmp_obj = cJSON_CreateObject();
-        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) p1_data->max_demand_month.timestamp);
-        cJSON_AddNumberToObject(tmp_obj, "demand", p1_data->max_demand_month.max_demand);
-        cJSON_AddItemToObject(json_obj, "maxDemandMonth", tmp_obj);
-        tmp_array = cJSON_CreateArray();
-        for (int i = 0; i < 13; i++) {
-            if (p1_data->max_demand_year[i].timestamp_appearance == 0) {
-                break;
-            }
-            tmp_obj = cJSON_CreateObject();
-            cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) p1_data->max_demand_year[i].timestamp_appearance);
-            cJSON_AddNumberToObject(tmp_obj, "demand", p1_data->max_demand_year[i].max_demand);
-            cJSON_AddItemToArray(tmp_array, tmp_obj);
-        }
-        cJSON_AddItemToObject(json_obj, "maxDemandYear", tmp_array);
-        cJSON_AddNumberToObject(json_obj, "currentPowerUsageL1", p1_data->current_power_usage_l1);
-        cJSON_AddNumberToObject(json_obj, "currentPowerUsageL2", p1_data->current_power_usage_l2);
-        cJSON_AddNumberToObject(json_obj, "currentPowerUsageL3", p1_data->current_power_usage_l3);
-        cJSON_AddNumberToObject(json_obj, "currentPowerReturnL1", p1_data->current_power_return_l1);
-        cJSON_AddNumberToObject(json_obj, "currentPowerReturnL2", p1_data->current_power_return_l2);
-        cJSON_AddNumberToObject(json_obj, "currentPowerReturnL3", p1_data->current_power_return_l3);
-        cJSON_AddNumberToObject(json_obj, "voltageL1", p1_data->voltage_l1);
-        cJSON_AddNumberToObject(json_obj, "voltageL2", p1_data->voltage_l2);
-        cJSON_AddNumberToObject(json_obj, "voltageL3", p1_data->voltage_l3);
-        cJSON_AddNumberToObject(json_obj, "currentL1", p1_data->current_l1);
-        cJSON_AddNumberToObject(json_obj, "currentL2", p1_data->current_l2);
-        cJSON_AddNumberToObject(json_obj, "currentL3", p1_data->current_l3);
-        switch (p1_data->breaker_state) {
-            case EMUCS_P1_BREAKER_STATE_DISCONNECTED:
-                cJSON_AddStringToObject(json_obj, "breakerState", "disconnected");
-                break;
-            case EMUCS_P1_BREAKER_STATE_CONNECTED:
-                cJSON_AddStringToObject(json_obj, "breakerState", "connected");
-                break;
-            case EMUCS_P1_BREAKER_STATE_READY_FOR_CONNECTION:
-                cJSON_AddStringToObject(json_obj, "breakerState", "readyForConnection");
-                break;
-        }
-        cJSON_AddNumberToObject(json_obj, "limiterThreshold", p1_data->limiter_threshold);
-        cJSON_AddNumberToObject(json_obj, "fuseSupervisionThreshold", p1_data->fuse_supervision_threshold);
-    }
-
-    // Return the semaphore
     xSemaphoreGive(mutex);
 
-    return ESP_OK;
+    // Get the predicted peak data
+    if (xSemaphoreTake(predicted_peak_mutex, pdMS_TO_TICKS(WEB_SERVER_MAX_TIMEOUT_MS)) == pdTRUE) {
+        predicted_peak = predict_peak_get_predicted_peak();
+        xSemaphoreGive(predicted_peak_mutex);
+    }
+    else {
+        ESP_LOGE(TAG, "Failed to get predicted peak mutex within %d ms", WEB_SERVER_MAX_TIMEOUT_MS);
+        return http_500_handler(req, "Failed to get predicted peak mutex");
+    }
+
+    //  predicted peak data
+    cJSON_AddNumberToObject(json_obj, "predictedPeak", predicted_peak.value);
+    cJSON_AddNumberToObject(json_obj, "predictedPeakTime", (double)predicted_peak.timestamp);
+
+    // Send the JSON object
+    err = send_json_response(req, json_obj, 200);
+
+    // Free resources
+    cJSON_Delete(json_obj);
+
+    return err;
+}
+
+/**
+ * @brief Handler for the meter-data
+ *
+ * @param[in] req The request handle
+ * @return ESP_OK on success
+ */
+static esp_err_t meter_data_history_get_handler(httpd_req_t *req) {
+    esp_err_t err;
+    cJSON *json_obj;
+    emucs_p1_data_t *p1_data;
+    cJSON *tmp_obj;
+    cJSON *tmp_array;
+    SemaphoreHandle_t mutex = emucs_p1_get_telegram_mutex_handle();
+    log_entry_short_term_p1_data_t *log_entry;
+    SemaphoreHandle_t short_term_log_mutex = logger_get_short_term_log_mutex_handle();
+    size_t item_count;
+    struct tm * tm_ptr;
+
+    ESP_LOGD(TAG, "meter_data_history_get_handler called");
+
+    log_entry = malloc(LOGGER_SHORT_TERM_LOG_SIZE * sizeof(log_entry_short_term_p1_data_t));
+    if (log_entry == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for log_entry");
+        vTaskDelete(NULL);
+        assert(0); // Should never get here
+    }
+
+    json_obj = cJSON_CreateObject();
+
+    // Get the semaphore
+    if (xSemaphoreTake(mutex, WEB_SERVER_MAX_TIMEOUT_MS / portTICK_PERIOD_MS) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to get P1 data semaphore within %d ms", WEB_SERVER_MAX_TIMEOUT_MS);
+        return ESP_FAIL;
+    }
+
+    // Get the P1 data pointer
+    p1_data = emucs_p1_get_telegram();
+
+    // Add the basic data to the root JSON object (json_obj)
+    tmp_array = cJSON_CreateArray();
+    for (int i = 0; i < 13; i++) {
+        if (p1_data->max_demand_year[i].timestamp_appearance == 0) {
+            break;
+        }
+        tmp_obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) p1_data->max_demand_year[i].timestamp_appearance);
+        cJSON_AddNumberToObject(tmp_obj, "demand", p1_data->max_demand_year[i].max_demand);
+        cJSON_AddItemToArray(tmp_array, tmp_obj);
+    }
+    cJSON_AddItemToObject(json_obj, "maxDemandYear", tmp_array);
+
+    xSemaphoreGive(mutex);
+
+    // Copy the short term log to a local buffer, sorted on entry timestamp
+    xSemaphoreTake(short_term_log_mutex, portMAX_DELAY);
+    item_count = logger_get_short_term_log_items(log_entry, LOGGER_SHORT_TERM_LOG_SIZE);
+    xSemaphoreGive(short_term_log_mutex);
+
+    ESP_LOGD(TAG, "item_count = %d", item_count);
+
+    // Find the first entry that starts at the beginning of a quarter-hour, i.e. 00, 15, 30 or 45 minutes
+    // If no such entry is found, use the first entry available
+    uint16_t first_entry_index = 0;
+    for (size_t i = 0; i < item_count; i++) {
+        tm_ptr = localtime(&log_entry[i].timestamp);
+        if (tm_ptr->tm_min % 15 == 0 && tm_ptr->tm_sec == 0) {
+            first_entry_index = i;
+            break;
+        }
+    }
+    ESP_LOGD(TAG, "first_entry_index = %d", first_entry_index);
+
+    // Add the short term log data to the root JSON object (json_obj)
+    tmp_array = cJSON_CreateArray();
+    for (size_t i = first_entry_index; i < item_count; i++) {
+        tmp_obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) log_entry[i].timestamp);
+        cJSON_AddNumberToObject(tmp_obj, "avgDemand", log_entry[i].current_avg_demand);
+        cJSON_AddNumberToObject(tmp_obj, "powerUsage", log_entry[i].current_power_usage);
+        cJSON_AddItemToArray(tmp_array, tmp_obj);
+    }
+    cJSON_AddItemToObject(json_obj, "shortTermHistory", tmp_array);
+
+
+    // Send the JSON object
+    err = send_json_response(req, json_obj, 200);
+
+    // Free resources
+    cJSON_Delete(json_obj);
+    free(log_entry);
+
+    return err;
 }

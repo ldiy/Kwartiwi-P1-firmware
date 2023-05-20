@@ -7,6 +7,7 @@
 #include "nvs_flash.h"
 #include "esp_system.h"
 #include "esp_event.h"
+#include "cJSON.h"
 #include "emucs_p1.h"
 #include "networking.h"
 #include "logger.h"
@@ -35,8 +36,15 @@ void app_main(void) {
     // Initialize the event loop
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    // Initialize the CJson library to use the psram
+    static cJSON_Hooks hooks = {
+            .malloc_fn = cjson_malloc,
+            .free_fn = heap_caps_free,
+    };
+    cJSON_InitHooks(&hooks);
+
     // Initialize networking
-    esp_log_level_set("networking", ESP_LOG_DEBUG);
+//    esp_log_level_set("networking", ESP_LOG_DEBUG);
     setup_networking();
 
     // Initialize web server

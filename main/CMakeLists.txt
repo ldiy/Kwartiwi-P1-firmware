@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "emucs_p1.c" "networking.c" "web_server.c"
+idf_component_register(SRCS "main.c" "emucs_p1.c" "networking.c" "web_server.c" "logger.c" "predict_peak.c"
                     INCLUDE_DIRS "." "include")
 
 
