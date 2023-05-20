@@ -11,9 +11,15 @@
 #include "networking.h"
 #include "logger.h"
 #include "web_server.h"
+#include "predict_peak.h"
+
+static void * CJSON_CDECL cjson_malloc(size_t size)
+{
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+}
 
 void app_main(void) {
-    esp_log_level_set("emucs_p1", ESP_LOG_DEBUG);
+    //esp_log_level_set("emucs_p1", ESP_LOG_DEBUG);
     xTaskCreate(emucs_p1_task, "emucs_p1_task", 4096, NULL, 5, NULL);
 
     //Initialize NVS
@@ -41,5 +47,7 @@ void app_main(void) {
     esp_log_level_set("logger", ESP_LOG_DEBUG);
     xTaskCreate(logger_task, "logger_task", 4096, NULL, 6, NULL);
 
-
+    // Run the predict peak task
+    esp_log_level_set("predict_peak", ESP_LOG_DEBUG);
+    xTaskCreate(predict_peak_task, "predict_peak_task", 4096, NULL, 5, NULL);
 }
