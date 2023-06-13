@@ -9,7 +9,7 @@
 #define LOGGER_SHORT_TERM_LOG_FREQUENCY_MS EMUCS_P1_TELEGRAM_INTERVAL_MS
 #define LOGGER_SHORT_TERM_LOG_DURATION_S (60 * 15)
 #define LOGGER_SHORT_TERM_LOG_SIZE ((LOGGER_SHORT_TERM_LOG_DURATION_S * 1000) / LOGGER_SHORT_TERM_LOG_FREQUENCY_MS)
-#define LOGGER_LONG_TERM_LOG_FREQUENCY_S (60 * 60 * 24)
+#define LOGGER_LONG_TERM_LOG_BUF_SIZE (4*12)    // Every quarter-hour for 12 hours
 
 typedef struct {
     time_t timestamp;
@@ -19,15 +19,17 @@ typedef struct {
 
 typedef struct {
     time_t timestamp;
-    float electricity_delivered_tariff1;
-    float electricity_delivered_tariff2;
-    float electricity_returned_tariff1;
-    float electricity_returned_tariff2;
+    uint16_t electricity_delivered_tariff1;
+    uint16_t electricity_delivered_tariff2;
+    uint16_t electricity_returned_tariff1;
+    uint16_t electricity_returned_tariff2;
 } log_entry_long_term_p1_data_t;
 
 // Function prototypes
 _Noreturn void logger_task(void *pvParameters);
 size_t logger_get_short_term_log_items(log_entry_short_term_p1_data_t *log, size_t max_items);
+size_t logger_get_long_term_log_items(log_entry_long_term_p1_data_t *log, size_t max_items);
 SemaphoreHandle_t logger_get_short_term_log_mutex_handle(void);
+SemaphoreHandle_t logger_get_long_term_log_mutex_handle(void);
 
 #endif //LOGGER_H

@@ -541,15 +541,18 @@ static esp_err_t meter_data_history_get_handler(httpd_req_t *req) {
     cJSON *tmp_obj;
     cJSON *tmp_array;
     SemaphoreHandle_t mutex = emucs_p1_get_telegram_mutex_handle();
-    log_entry_short_term_p1_data_t *log_entry;
+    log_entry_short_term_p1_data_t *short_term_log_entry;
+    log_entry_long_term_p1_data_t *long_term_log_entry;
     SemaphoreHandle_t short_term_log_mutex = logger_get_short_term_log_mutex_handle();
+    SemaphoreHandle_t long_term_log_mutex = logger_get_long_term_log_mutex_handle();
     size_t item_count;
     struct tm * tm_ptr;
 
     ESP_LOGD(TAG, "meter_data_history_get_handler called");
 
-    log_entry = malloc(LOGGER_SHORT_TERM_LOG_SIZE * sizeof(log_entry_short_term_p1_data_t));
-    if (log_entry == NULL) {
+    short_term_log_entry = malloc(LOGGER_SHORT_TERM_LOG_SIZE * sizeof(log_entry_short_term_p1_data_t));
+    if (short_term_log_entry == NULL) {
+        // TODO: return 500 error instead ?
         ESP_LOGE(TAG, "Failed to allocate memory for log_entry");
         vTaskDelete(NULL);
         assert(0); // Should never get here
@@ -583,7 +586,7 @@ static esp_err_t meter_data_history_get_handler(httpd_req_t *req) {
 
     // Copy the short term log to a local buffer, sorted on entry timestamp
     xSemaphoreTake(short_term_log_mutex, portMAX_DELAY);
-    item_count = logger_get_short_term_log_items(log_entry, LOGGER_SHORT_TERM_LOG_SIZE);
+    item_count = logger_get_short_term_log_items(short_term_log_entry, LOGGER_SHORT_TERM_LOG_SIZE);
     xSemaphoreGive(short_term_log_mutex);
 
     ESP_LOGD(TAG, "item_count = %d", item_count);
@@ -592,7 +595,7 @@ static esp_err_t meter_data_history_get_handler(httpd_req_t *req) {
     // If no such entry is found, use the first entry available
     uint16_t first_entry_index = 0;
     for (size_t i = 0; i < item_count; i++) {
-        tm_ptr = localtime(&log_entry[i].timestamp);
+        tm_ptr = localtime(&short_term_log_entry[i].timestamp);
         if (tm_ptr->tm_min % 15 == 0 && tm_ptr->tm_sec == 0) {
             first_entry_index = i;
             break;
@@ -604,20 +607,49 @@ static esp_err_t meter_data_history_get_handler(httpd_req_t *req) {
     tmp_array = cJSON_CreateArray();
     for (size_t i = first_entry_index; i < item_count; i++) {
         tmp_obj = cJSON_CreateObject();
-        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) log_entry[i].timestamp);
-        cJSON_AddNumberToObject(tmp_obj, "avgDemand", log_entry[i].current_avg_demand);
-        cJSON_AddNumberToObject(tmp_obj, "powerUsage", log_entry[i].current_power_usage);
+        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) short_term_log_entry[i].timestamp);
+        cJSON_AddNumberToObject(tmp_obj, "avgDemand", short_term_log_entry[i].current_avg_demand);
+        cJSON_AddNumberToObject(tmp_obj, "powerUsage", short_term_log_entry[i].current_power_usage);
         cJSON_AddItemToArray(tmp_array, tmp_obj);
     }
     cJSON_AddItemToObject(json_obj, "shortTermHistory", tmp_array);
 
+    free(short_term_log_entry);
+
+    // Copy the long term log to a local buffer, sorted on entry timestamp
+    long_term_log_entry = malloc(LOGGER_LONG_TERM_LOG_BUF_SIZE * sizeof(log_entry_short_term_p1_data_t));
+    if (long_term_log_entry == NULL) {
+        // TODO: return 500 error instead?
+        ESP_LOGE(TAG, "Failed to allocate memory for log_entry");
+        vTaskDelete(NULL);
+        assert(0); // Should never get here
+    }
+
+    xSemaphoreTake(long_term_log_mutex, portMAX_DELAY);
+    item_count = logger_get_long_term_log_items(long_term_log_entry, LOGGER_LONG_TERM_LOG_BUF_SIZE);
+    xSemaphoreGive(long_term_log_mutex);
+
+    // Add the long term log data to the root JSON object (json_obj)
+    tmp_array = cJSON_CreateArray();
+    for (size_t i = 0; i < item_count; i++) {
+        tmp_obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(tmp_obj, "timestamp", (double) long_term_log_entry[i].timestamp);
+        cJSON_AddNumberToObject(tmp_obj, "electricityDeliveredTariff1", long_term_log_entry[i].electricity_delivered_tariff1);
+        cJSON_AddNumberToObject(tmp_obj, "electricityDeliveredTariff2", long_term_log_entry[i].electricity_delivered_tariff2);
+        cJSON_AddNumberToObject(tmp_obj, "electricityReturnedTariff1", long_term_log_entry[i].electricity_returned_tariff1);
+        cJSON_AddNumberToObject(tmp_obj, "electricityReturnedTariff2", long_term_log_entry[i].electricity_returned_tariff2);
+        cJSON_AddItemToArray(tmp_array, tmp_obj);
+    }
+
+    cJSON_AddItemToObject(json_obj, "longTermHistory", tmp_array);
+
+    free(long_term_log_entry);
 
     // Send the JSON object
     err = send_json_response(req, json_obj, 200);
 
     // Free resources
     cJSON_Delete(json_obj);
-    free(log_entry);
 
     return err;
 }

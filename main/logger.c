@@ -28,15 +28,23 @@
  *          The number of items in the log is stored in short_term_log_item_count.
  *          Items are sorted by timestamp, with the oldest entry at the tail and the newest entry at the head.
  */
-log_entry_short_term_p1_data_t short_term_log[LOGGER_SHORT_TERM_LOG_SIZE];
+static log_entry_short_term_p1_data_t short_term_log[LOGGER_SHORT_TERM_LOG_SIZE];
 static size_t short_term_log_head_index = 0;  // The index of the next entry to be written
 static size_t short_term_log_item_count = 0;  // The number of items in the log
-SemaphoreHandle_t short_term_log_mutex;
+static SemaphoreHandle_t short_term_log_mutex;
+
+static log_entry_long_term_p1_data_t long_term_log[LOGGER_LONG_TERM_LOG_BUF_SIZE];
+static size_t long_term_log_head_index = 0;   // The index of the next entry to be written
+static size_t long_term_log_item_count = 0;   // The number of items in the log
+static SemaphoreHandle_t long_term_log_mutex;
+
 static const char *TAG = "logger";
 
 // Function prototypes
 static void add_short_term_log_entry(log_entry_short_term_p1_data_t *entry);
+static void add_long_term_log_entry(log_entry_long_term_p1_data_t *entry);
 static void log_short_term_p1_data(emucs_p1_data_t *p1_data);
+static void log_long_term_p1_date(emucs_p1_data_t *p1_data);
 
 
 /**
@@ -61,6 +69,18 @@ _Noreturn void logger_task(void *pvParameters) {
     }
 
     short_term_log_mutex = xSemaphoreCreateMutex();
+    if (short_term_log_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create short term log mutex");
+        vTaskDelete(NULL);
+        assert(0); // Should never get here
+    }
+
+    long_term_log_mutex = xSemaphoreCreateMutex();
+    if (long_term_log_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create long term log mutex");
+        vTaskDelete(NULL);
+        assert(0); // Should never get here
+    }
 
     for(;;) {
         // Wait for a new telegram
@@ -73,7 +93,7 @@ _Noreturn void logger_task(void *pvParameters) {
         log_short_term_p1_data(p1_data);
 
         // Log the long term data
-        // TODO: Log the long term data
+        log_long_term_p1_date(p1_data);
 
         // Return the semaphore
         xSemaphoreGive(telegram_mutex);
@@ -88,6 +108,9 @@ _Noreturn void logger_task(void *pvParameters) {
  * @param entry The data entry to add
  */
 static void add_short_term_log_entry(log_entry_short_term_p1_data_t *entry) {
+    // Get the semaphore
+    xSemaphoreTake(short_term_log_mutex, portMAX_DELAY);
+
     // Add the entry to the log
     short_term_log[short_term_log_head_index] = *entry;
 
@@ -98,6 +121,36 @@ static void add_short_term_log_entry(log_entry_short_term_p1_data_t *entry) {
     if (short_term_log_item_count < LOGGER_SHORT_TERM_LOG_SIZE) {
         short_term_log_item_count++;
     }
+
+    // Return the semaphore
+    xSemaphoreGive(short_term_log_mutex);
+}
+
+static void add_long_term_log_entry(log_entry_long_term_p1_data_t *entry) {
+    // Get the semaphore
+    xSemaphoreTake(long_term_log_mutex, portMAX_DELAY);
+
+    time_t last_timestamp = long_term_log[long_term_log_head_index].timestamp;
+    if (last_timestamp == 0) {
+        last_timestamp = entry->timestamp;
+    }
+
+    // Check if the timestamp is in the following quarter-hour
+    if (last_timestamp / 900 < entry->timestamp / 900) {
+        // Move the head index to the next entry
+        long_term_log_head_index = (long_term_log_head_index + 1) % LOGGER_LONG_TERM_LOG_BUF_SIZE;
+
+        // Increment the item count
+        if (long_term_log_item_count < LOGGER_LONG_TERM_LOG_BUF_SIZE) {
+            long_term_log_item_count++;
+        }
+    }
+
+    // Add the entry to the log
+    long_term_log[long_term_log_head_index] = *entry;
+
+    // Return the semaphore
+    xSemaphoreGive(long_term_log_mutex);
 }
 
 /**
@@ -116,6 +169,19 @@ static void log_short_term_p1_data(emucs_p1_data_t *p1_data) {
     };
 
     add_short_term_log_entry(&entry);
+}
+
+static void log_long_term_p1_date(emucs_p1_data_t *p1_data) {
+    ESP_LOGD(TAG, "Logging long term P1 data telegram");
+    log_entry_long_term_p1_data_t entry = {
+        .timestamp = p1_data->msg_timestamp,
+        .electricity_delivered_tariff1 = (uint16_t)(p1_data->electricity_delivered_tariff1 * 1000),
+        .electricity_delivered_tariff2 = (uint16_t)(p1_data->electricity_delivered_tariff2 * 1000),
+        .electricity_returned_tariff1 = (uint16_t)(p1_data->electricity_returned_tariff1 * 1000),
+        .electricity_returned_tariff2 = (uint16_t)(p1_data->electricity_returned_tariff2 * 1000),
+    };
+
+    add_long_term_log_entry(&entry);
 }
 
 /**
@@ -143,6 +209,21 @@ size_t logger_get_short_term_log_items(log_entry_short_term_p1_data_t *log, size
     return max_items;
 }
 
+size_t logger_get_long_term_log_items(log_entry_long_term_p1_data_t *log, size_t max_items) {
+    // Limit the number of items to the number of items in the log
+    if (max_items > long_term_log_item_count) {
+        max_items = long_term_log_item_count;
+    }
+
+    // Copy the items to the log
+    size_t tail_index = (LOGGER_LONG_TERM_LOG_BUF_SIZE + long_term_log_head_index - max_items) % LOGGER_LONG_TERM_LOG_BUF_SIZE;
+    for (size_t i = 0; i < max_items; i++) {
+        log[i] = long_term_log[(tail_index + i) % LOGGER_LONG_TERM_LOG_BUF_SIZE];
+    }
+
+    return max_items;
+}
+
 /**
  * @brief Get the short term log mutex handle
  *
@@ -150,4 +231,8 @@ size_t logger_get_short_term_log_items(log_entry_short_term_p1_data_t *log, size
  */
 SemaphoreHandle_t logger_get_short_term_log_mutex_handle(void) {
     return short_term_log_mutex;
+}
+
+SemaphoreHandle_t logger_get_long_term_log_mutex_handle(void) {
+    return long_term_log_mutex;
 }
