@@ -182,8 +182,9 @@ static struct predicted_peak_s predict_peak_linear_regression(log_entry_short_te
     float timestamp_mean;
     float current_avg_demand_mean;
     float slope;
-    float intercept;
     struct predicted_peak_s result;
+    time_t last_timestamp = 0;
+    float last_avg_demand = 0.0;
     time_t end_timestamp;
 
     for (uint16_t i = 0; i < item_count; i++) {
@@ -201,13 +202,18 @@ static struct predicted_peak_s predict_peak_linear_regression(log_entry_short_te
     // Calculate the slope and intercept
     slope = (sum_timestamp_current_avg_demand - (float) sum_timestamp * current_avg_demand_mean) /
             ((float) sum_timestamp_squared - (float) sum_timestamp * timestamp_mean);
-    intercept = current_avg_demand_mean - slope * timestamp_mean;
 
     // Calculate the timestamp at which the quarter-hour will end
     end_timestamp = get_timestamp_at_end_of_quarter_hour(log_entry[0].timestamp);
 
+    // Get the data of the last entry.
+    if (item_count > 0) {
+        last_timestamp = log_entry[item_count - 1].timestamp;
+        last_avg_demand = log_entry[item_count - 1].current_avg_demand;
+    }
+
     // Calculate the predicted peak at the end of the quarter-hour
-    result.value = slope * (float) (end_timestamp - log_entry[0].timestamp) + intercept;
+    result.value = last_avg_demand + slope * (float) (end_timestamp - last_timestamp);
     result.timestamp = end_timestamp;
 
     return result;
