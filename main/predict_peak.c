@@ -228,11 +228,10 @@ static struct predicted_peak_s predict_peak_weighted_average(log_entry_short_ter
     struct predicted_peak_s result;
     float sum_weighted_current_power_usage = 0;
     uint32_t sum_weight = 0;
-    uint32_t weight;
     time_t end_timestamp;
 
     for (uint16_t i = 0; i < item_count; i++) {
-        weight = log_entry[0].timestamp - log_entry[i].timestamp + 1;
+        uint32_t weight = log_entry[i].timestamp - log_entry[0].timestamp + 1;
         sum_weighted_current_power_usage += (float)weight * log_entry[i].current_power_usage;
         sum_weight += weight;
     }
